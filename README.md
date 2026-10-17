@@ -1,19 +1,19 @@
 # OpsPulse
 
-Infrastructure time-series anomaly detection with Python, scikit-learn, and Streamlit.
+**Historical infrastructure anomaly detection with Python, scikit-learn, and Streamlit.**
 
-OpsPulse trains an **Isolation Forest** on an initial chronological segment of a metric series, scores later observations, and visualizes unusual readings. It includes a rolling z-score comparison and optional evaluation against labeled anomaly windows from the [Numenta Anomaly Benchmark (NAB)](https://github.com/numenta/NAB).
+**Live dashboard:** https://opspulse-ml.streamlit.app/
+
+OpsPulse analyzes one metric series at a time using Isolation Forest. It trains on the earlier part of the series, flags unusual readings in the later part, and compares the results with a rolling z-score baseline. Optional alert confirmation and incident grouping help explore alert noise without changing the trained model.
 
 ## Features
 
-- Analyze historical AWS CloudWatch metric series from NAB or upload a CSV with `timestamp` and `value` columns.
-- Engineer rolling statistics and rate-of-change features using current and earlier observations only.
-- Train an unsupervised Isolation Forest and evaluate on a later chronological segment.
-- Compare alerts with a rolling z-score baseline.
-- Explore flagged readings on an interactive timeline and export evaluation alerts as CSV.
-- Try the interface without a download using a reproducible **synthetic demo**.
-
-## Tech stack
+- Load historical AWS CloudWatch metrics from the [Numenta Anomaly Benchmark (NAB)](https://github.com/numenta/NAB), use a synthetic example, or upload a CSV.
+- Build rolling and rate-of-change features using current and past readings.
+- Calibrate the Isolation Forest alert threshold on the training segment only.
+- Adjust the training alert rate, require repeated alerts, and group nearby alerts into incidents.
+- Compare raw and confirmed alerts against NAB anomaly windows, including a one-click comparison across four AWS series.
+- Export confirmed alerts and incident summaries as CSV.
 
 `Python` · `pandas` · `scikit-learn` · `Streamlit` · `Plotly` · `pytest`
 
@@ -24,55 +24,49 @@ Python 3.11+ is recommended.
 ```bash
 git clone https://github.com/Kiranmoy03/opspulse.git
 cd opspulse
-python -m venv .venv
-```
-
-Activate the virtual environment:
-
-- Windows PowerShell: `.venv\Scripts\Activate.ps1`
-- macOS/Linux: `source .venv/bin/activate`
-
-```bash
 python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The default dataset is synthetic and available offline. Real NAB series are fetched from GitHub when selected, so those options require internet access.
+The default demo is synthetic and works offline. NAB data requires an internet connection. Uploaded CSV files need `timestamp` and `value` columns and enough valid readings for the chronological split.
 
-## Evaluate a NAB series
+## Evaluate the model
+
+Run the fixed configuration on all four included AWS series:
 
 ```bash
-python -m scripts.evaluate_nab
+python -m scripts.evaluate_nab --output evaluation.csv
 ```
 
-Use `python -m scripts.evaluate_nab --help` to see the available dataset paths and model settings.
+To view available settings:
 
-The dashboard reports **point-level precision, recall, F1, and anomaly-window hit counts** for the evaluation portion of the series. These are descriptive measures, **not the official NAB benchmark score**. The labels cover broad time windows, so point-level scores can be misleading for early detection. No claim of production accuracy or generalization is made.
+```bash
+python -m scripts.evaluate_nab --help
+```
 
-## Test
+The report compares raw Isolation Forest alerts, confirmed alerts, and rolling z-score using precision, recall, F1, alert rate, and detected anomaly windows. The threshold is calibrated without labels. Reducing the number of alerts may also reduce recall. **These point-level measures are not the official NAB score.**
+
+## Tests
 
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Tests check data cleaning, chronological splitting, deterministic scoring, feature leakage, and evaluation metrics.
-
 ## Structure
 
 ```text
-app.py                    Streamlit interface
+app.py                    Streamlit dashboard
 opspulse/
-  data.py                 CSV input and NAB loading
-  demo.py                 Reproducible synthetic sample
-  model.py                Time-series features and Isolation Forest
-  metrics.py              Evaluation metrics
-scripts/evaluate_nab.py   Command-line NAB evaluation
+  alerts.py               Alert confirmation and incident grouping
+  data.py                 CSV and NAB loading
+  demo.py                 Synthetic example
+  model.py                Feature engineering and Isolation Forest
+  metrics.py              Point-level and window-level evaluation
+scripts/evaluate_nab.py   Reproducible four-series evaluation
 tests/test_pipeline.py    Automated tests
 ```
 
-## Data source and limitations
+## Limitations
 
-Real metric data and anomaly windows are provided by [Numenta/NAB](https://github.com/numenta/NAB), specifically the `data/realAWSCloudwatch` series and `labels/combined_windows.json`. See the upstream repository for dataset terms and attribution. The example dataset generated in `opspulse/demo.py` is **synthetic** and is not representative of real server performance.
-
-OpsPulse currently analyzes **one historical metric at a time**. Its rolling features use observations available up to each timestamp, but model fitting is offline. It does not connect to infrastructure monitoring systems, send live alerts, or replace an operational monitoring solution. The initial training portion is not guaranteed anomaly-free, and outcomes depend on the chosen time series and contamination setting.
+OpsPulse is an exploratory offline model, not a live monitoring system. It processes a single historical metric and does not collect production telemetry or send operational alerts. NAB labels are broad windows; a detected window does not establish that every anomaly point was detected. Distribution changes can produce false positives, and training data may contain anomalies. The evaluation uses a chronological holdout, not cross-validation or the official NAB scoring procedure.

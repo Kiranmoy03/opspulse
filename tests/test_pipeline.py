@@ -67,3 +67,76 @@ def test_parse_nab_windows():
     windows = parse_windows(payload, "realAWSCloudwatch/example.csv")
     assert len(windows) == 1
     assert str(windows[0][0].tzinfo) == "UTC"
+
+
+def test_training_threshold_is_calibrated_without_test_data():
+    series, _ = make_demo_series()
+    model = detect(series, alert_rate=0.01)
+    training = model.points.iloc[:model.train_rows]
+    assert 0 < training["is_anomaly"].sum() <= round(len(training) * 0.02)
+    assert model.threshold > 0
+    other = series.copy()
+    other.loc[1000:, "value"] += 1000
+    shifted = detect(other, alert_rate=0.01)
+    assert model.threshold == shifted.threshold
+    pd.testing.assert_series_equal(
+        model.points.iloc[:900]["score"], shifted.points.iloc[:900]["score"]
+    )
+
+
+def test_stricter_training_alert_rate_reduces_raw_alerts():
+    series, _ = make_demo_series()
+    strict = detect(series, alert_rate=0.005)
+    liberal = detect(series, alert_rate=0.05)
+    assert strict.threshold > liberal.threshold
+    assert strict.points["is_anomaly"].sum() <= liberal.points["is_anomaly"].sum()
+
+
+def test_confirmation_only_uses_current_and_past_readings():
+    from opspulse.alerts import confirm_alerts
+    flags = pd.Series([True, False, True, True, False, True, False])
+    confirmed = confirm_alerts(flags, required=2, window=3)
+    assert confirmed.tolist() == [False, False, True, True, False, True, False]
+    assert confirm_alerts(flags, required=1).equals(flags)
+    with pytest.raises(ValueError):
+        confirm_alerts(flags, required=4, window=3)
+
+
+def test_incidents_merge_short_gaps_but_not_unrelated_alerts():
+    from opspulse.alerts import group_incidents
+    flags = [False, True, False, True, False, False, False, True, False, False, False, False, True]
+    times = pd.date_range("2026-01-01", periods=len(flags), freq="min", tz="UTC")
+    points = pd.DataFrame({"timestamp": times, "score": range(len(flags)), "confirmed_alert": flags})
+    groups = group_incidents(points, max_gap=2)
+    assert len(groups) == 3
+    assert groups.iloc[0]["alert_points"] == 2
+    assert groups.iloc[0]["peak_score"] == 3
+    assert groups.iloc[1]["start"] == times[7]
+    assert group_incidents(points.assign(confirmed_alert=False)).empty
+
+
+def test_evaluation_metrics_ignore_series_index():
+    times = pd.Series(pd.date_range("2026-01-01", periods=10, freq="h", tz="UTC"), index=range(50, 60))
+    flags = pd.Series([False] * 7 + [True] + [False] * 2, index=range(50, 60))
+    report = summarize(times, flags, [(times.iloc[7], times.iloc[7])])
+    assert report["events_detected"] == 1
+    assert report["alert_rate"] == pytest.approx(0.1)
+
+
+def test_batch_evaluation_produces_three_comparable_rows(monkeypatch):
+    from scripts import evaluate_nab
+    series, windows = make_demo_series()
+    monkeypatch.setattr(evaluate_nab, "load_nab", lambda _: (series.copy(), windows))
+    report = evaluate_nab.evaluate_series(
+        "realAWSCloudwatch/ec2_cpu_utilization_5f5533.csv",
+        alert_rate=0.04,
+        train_fraction=0.6,
+        required=2,
+        max_gap=6,
+    )
+    assert [row["method"] for row in report] == [
+        "Isolation Forest (raw)", "Confirmed alerts", "Rolling z-score"
+    ]
+    assert all(row["eval_rows"] > 0 for row in report)
+    assert report[1]["alerts"] <= report[0]["alerts"]
+    assert report[1]["incidents"] is not None
